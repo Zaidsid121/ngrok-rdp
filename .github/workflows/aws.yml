@@ -1,44 +1,52 @@
-name: AWS
-on: workflow_dispatch
+name: Windows RDP with localhost.run
+
+on:
+  workflow_dispatch:
 
 jobs:
   build:
-
     runs-on: windows-latest
-    timeout-minutes: 9999
+    timeout-minutes: 240 # 4 घंटे का टाइमआउट
 
     steps:
+      - name: 1. Set Up User and Password
+        run: |
+          $password = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 12 | ForEach-Object {[char]$_})
+          echo "RDP_USER=rdpuser" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "RDP_PASS=$password" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          net user rdpuser $password /add
+          net localgroup administrators rdpuser /add
 
-    - name: Download ngrok
-      run: |
-        Invoke-WebRequest https://raw.githubusercontent.com/boedy125/ngrok-rdp/main/resources/ngrok.zip -OutFile ngrok.zip
-        Invoke-WebRequest https://raw.githubusercontent.com/boedy125/ngrok-rdp/main/resources/start.bat -OutFile start.bat
-        Invoke-WebRequest https://raw.githubusercontent.com/boedy125/ngrok-rdp/main/resources/winrar.exe -OutFile winrar.exe
-    - name: Extract ngrok Files
-      run: Expand-Archive ngrok.zip
+      - name: 2. Enable RDP Access
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-    - name: Connecting ngrok Account
-      run: .\ngrok\ngrok.exe authtoken $Env:NGROK_AUTH_TOKEN
-      env:
-        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+      - name: 3. Create Tunnel with localhost.run
+        run: |
+          # PowerShell को एक नई विंडो में शुरू करें जो ssh कनेक्शन बनाए रखेगी
+          Start-Process powershell -ArgumentList '-NoExit', '-Command', "ssh -R 80:localhost:3389 -o 'StrictHostKeyChecking=no' -o 'ServerAliveInterval=60' ssh.localhost.run" -NoNewWindow
+          # कनेक्शन बनने के लिए 15 सेकंड प्रतीक्षा करें
+          Start-Sleep -Seconds 15
 
-    - name: Enable RDP Access
-      run: |
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server'-name "fDenyTSConnections" -Value 0
-        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
-        copy winrar.exe C:\Users\Public\Desktop\winrar.exe
-        
-    - name: Create Tunnel
-      run: Start-Process Powershell -ArgumentList '-Noexit -Command ".\ngrok\ngrok.exe tcp 3389"'
+      - name: 4. Display RDP Connection Info
+        run: |
+          # nohup.out फाइल से कनेक्शन की जानकारी निकालें
+          $logContent = Get-Content -Path nohup.out -Tail 10 -ErrorAction SilentlyContinue
+          $tunnelInfo = $logContent | Select-String "ssh.localhost.run" | Select-Object -Last 1
+          $ipAddress = ($tunnelInfo -split ' ')[-1]
 
-    - name: Connect to RDP  [CPU 2 Core - 7GB Ram - 256 SSD]
-      run: cmd /c start.bat
+          echo "✅ RDP Details (NO TOKEN NEEDED):"
+          echo "------------------------------------------------"
+          echo "Host/IP    : $ipAddress"
+          echo "Username   : ${{ env.RDP_USER }}"
+          echo "Password   : ${{ env.RDP_PASS }}"
+          echo "------------------------------------------------"
+          echo "IMPORTANT: The Host/IP will look like random words (e.g., random-words-1234.lhr.life), not numbers."
+          echo "If Host/IP is blank, wait 1-2 minutes and re-run the job. The tunnel needs time to connect."
 
-    - name: Install Winrar
-      run: cmd /c C:\Users\Public\Desktop\winrar.exe winrar.exe /s
-      
-    - name: TimeCount
-      run: |
-        Invoke-WebRequest https://raw.githubusercontent.com/adtitas/ngrok-rdp/main/resources/loop.ps1 -OutFile loop.ps1
-        ./loop.ps1
+      - name: 5. Keep RDP Alive
+        run: |
+          # RDP को लगभग 4 घंटे तक चालू रखने के लिए लूप
+          timeout /t 14400 /nobreak
+          
